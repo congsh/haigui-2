@@ -1,0 +1,36 @@
+{
+  "name": "haigui",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "海龟汤",
+    "谜题",
+    "游戏"
+  ],
+  "author": "",
+  "license": "ISC",
+  "description": "海龟汤在线房间 - 基于LeanCloud实现的纯前端谜题游戏",
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.1.8",
+    "compressorjs": "^1.2.1",
+    "leancloud-realtime": "^5.0.0-rc.8",
+    "leancloud-storage": "^4.15.0",
+    "nanoid": "^5.0.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
+    "zustand": "^4.4.6"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.4",
+    "tailwindcss": "^4.1.8",
+    "vite": "^5.0.2"
+  }
+}
