@@ -1,5 +1,5 @@
 import AV from 'leancloud-storage';
-import { Realtime } from 'leancloud-realtime';
+import { Realtime, TextMessage } from 'leancloud-realtime';
 
 // LeanCloud 配置
 // 在实际项目中，这些值应该从环境变量中读取
@@ -143,6 +143,19 @@ export const findRoomById = async (roomId) => {
 // 加入房间
 export const joinRoom = async (roomId, userId, nickname, isHost = false) => {
   try {
+    // 检查是否已经是参与者
+    const existingQuery = new AV.Query('Participant');
+    existingQuery.equalTo('roomId', roomId);
+    existingQuery.equalTo('userId', userId);
+    const existingParticipant = await existingQuery.first();
+    
+    if (existingParticipant) {
+      // 如果已经是参与者，更新最后活跃时间
+      existingParticipant.set('lastActive', new Date());
+      await existingParticipant.save();
+      return existingParticipant.toJSON();
+    }
+    
     const Participant = AV.Object.extend('Participant');
     const participant = new Participant();
     
@@ -160,7 +173,25 @@ export const joinRoom = async (roomId, userId, nickname, isHost = false) => {
     participant.setACL(participantACL);
     
     await participant.save();
-    return participant.toJSON();
+    const participantData = participant.toJSON();
+    
+    // 发送参与者加入的实时通知
+    try {
+      const joinMessage = {
+        type: 'participant_join',
+        roomId: roomId,
+        participant: participantData,
+        timestamp: new Date().toISOString()
+      };
+      
+      // 通过实时通信通知其他参与者
+      await sendRealtimeNotification(roomId, joinMessage);
+    } catch (realtimeError) {
+      console.warn('发送参与者加入通知失败:', realtimeError);
+      // 不影响主要的加入房间流程
+    }
+    
+    return participantData;
   } catch (error) {
     console.error('加入房间失败:', error);
     throw error;
@@ -177,6 +208,47 @@ export const getRoomParticipants = async (roomId) => {
     return participants.map(p => p.toJSON());
   } catch (error) {
     console.error('获取参与者失败:', error);
+    throw error;
+  }
+};
+
+// 离开房间（删除参与者记录）
+export const removeParticipant = async (roomId, userId) => {
+  try {
+    const query = new AV.Query('Participant');
+    query.equalTo('roomId', roomId);
+    query.equalTo('userId', userId);
+    const participant = await query.first();
+    
+    if (!participant) {
+      console.warn('参与者记录不存在');
+      return null;
+    }
+    
+    const participantData = participant.toJSON();
+    
+    // 删除参与者记录
+    await participant.destroy();
+    
+    // 发送参与者离开的实时通知
+    try {
+      const leaveMessage = {
+        type: 'participant_leave',
+        roomId: roomId,
+        participant: participantData,
+        timestamp: new Date().toISOString()
+      };
+      
+      // 通过实时通信通知其他参与者
+      await sendRealtimeNotification(roomId, leaveMessage);
+    } catch (realtimeError) {
+      console.warn('发送参与者离开通知失败:', realtimeError);
+      // 不影响主要的离开房间流程
+    }
+    
+    return participantData;
+  } catch (error) {
+    console.error('离开房间失败:', error);
     throw error;
   }
 };
@@ -363,13 +435,30 @@ export const createRealtimeConnection = async (userId) => {
 // 创建或加入实时对话
 export const joinRealtimeConversation = async (client, roomId, participants) => {
   try {
-    const conversation = await client.createConversation({
-      name: `Room-${roomId}`,
-      members: participants,
-      unique: true,
-    });
+    let conversation;
+    try {
+      // 通过查询查找现有对话
+      const query = client.getQuery();
+      query.equalTo('name', `Room-${roomId}`);
+      const conversations = await query.find();
+      
+      if (conversations.length > 0) {
+        conversation = conversations[0];
+        console.log('找到现有对话:', conversation.id);
+        return conversation;
+      }
+    } catch (error) {
+      console.log('查找对话失败，将创建新对话:', error.message);
+    }
     
-    return conversation;
+    // 如果没有找到现有对话，创建新的
+     conversation = await client.createConversation({
+       name: `Room-${roomId}`,
+       members: participants,
+       unique: true,
+     });
+     console.log('创建新对话成功:', conversation.id);
+     return conversation;
   } catch (error) {
     console.error('加入实时对话失败:', error);
     throw error;
@@ -377,19 +466,154 @@ export const joinRealtimeConversation = async (client, roomId, participants) => 
 };
 
 // 发送实时消息
-export const sendRealtimeMessage = async (conversation, message) => {
+export const sendRealtimeMessage = async (conversation, messageData) => {
   try {
-    if (!message.hasOwnProperty('text')) {
-      // 如果没有text属性，则将整个消息作为text发送
-      message = { text: JSON.stringify(message) };
-    }
+    // 确保消息数据是字符串格式
+    const messageText = typeof messageData === 'string' 
+      ? messageData 
+      : JSON.stringify(messageData);
     
+    // 创建文本消息对象
+    const message = new TextMessage(messageText);
+    
+    // 发送消息
     await conversation.send(message);
     return true;
   } catch (error) {
     console.error('发送实时消息失败:', error);
     throw error;
   }
+};
+
+// 缓存实时客户端和对话，避免重复创建
+let cachedClient = null;
+let cachedConversations = new Map();
+
+/**
+ * 获取或创建实时客户端
+ * @param {Object} user - 当前用户
+ * @returns {Promise<Object>} 实时客户端
+ */
+const getOrCreateClient = async (user) => {
+  if (!cachedClient || cachedClient.id !== user.id) {
+    cachedClient = await realtime.createIMClient(user);
+  }
+  return cachedClient;
+};
+
+/**
+ * 获取或创建对话
+ * @param {Object} client - 实时客户端
+ * @param {string} roomId - 房间ID
+ * @param {Array} memberIds - 成员ID列表
+ * @returns {Promise<Object>} 对话对象
+ */
+const getOrCreateConversation = async (client, roomId, memberIds) => {
+  const conversationKey = `Room-${roomId}`;
+  
+  // 检查缓存
+  if (cachedConversations.has(conversationKey)) {
+    const conversation = cachedConversations.get(conversationKey);
+    try {
+      // 确保所有成员都在对话中
+      const newMembers = memberIds.filter(id => !conversation.members.includes(id));
+      if (newMembers.length > 0) {
+        await conversation.add(newMembers);
+        console.log('已更新对话成员列表');
+      }
+      return conversation;
+    } catch (error) {
+      console.log('使用缓存对话失败，重新查找:', error.message);
+      cachedConversations.delete(conversationKey);
+    }
+  }
+  
+  // 查找现有对话
+  try {
+    const query = client.getQuery();
+    query.equalTo('name', conversationKey);
+    const conversations = await query.find();
+    
+    if (conversations.length > 0) {
+      const conversation = conversations[0];
+      cachedConversations.set(conversationKey, conversation);
+      console.log('找到现有对话:', conversation.id);
+      
+      // 确保所有成员都在对话中
+      try {
+        const newMembers = memberIds.filter(id => !conversation.members.includes(id));
+        if (newMembers.length > 0) {
+          await conversation.add(newMembers);
+          console.log('已更新对话成员列表');
+        }
+      } catch (addError) {
+        console.log('更新成员列表失败:', addError.message);
+      }
+      
+      return conversation;
+    }
+  } catch (error) {
+    console.log('查找对话失败:', error.message);
+  }
+  
+  // 创建新对话
+  const conversation = await client.createConversation({
+    name: conversationKey,
+    members: memberIds,
+    unique: true,
+  });
+  
+  cachedConversations.set(conversationKey, conversation);
+  console.log('创建新对话成功:', conversation.id);
+  return conversation;
+};
+
+// 发送实时通知（优化版本）
+export const sendRealtimeNotification = async (roomId, notificationData) => {
+  try {
+    // 获取当前用户
+    const currentUser = AV.User.current();
+    if (!currentUser) {
+      console.warn('用户未登录，无法发送实时通知');
+      return;
+    }
+    
+    // 获取或创建实时客户端
+    const client = await getOrCreateClient(currentUser);
+    
+    // 获取房间参与者列表
+    const participants = await getRoomParticipants(roomId);
+    const memberIds = participants.map(p => p.userId);
+    
+    // 确保当前用户也在成员列表中
+    if (!memberIds.includes(currentUser.id)) {
+      memberIds.push(currentUser.id);
+    }
+    
+    // 获取或创建对话
+    const conversation = await getOrCreateConversation(client, roomId, memberIds);
+    
+    // 发送通知消息
+    const messageText = JSON.stringify(notificationData);
+    const message = new TextMessage(messageText);
+    await conversation.send(message);
+    console.log('实时通知发送成功:', notificationData.type);
+    
+    return true;
+  } catch (error) {
+    console.error('发送实时通知失败:', error);
+    // 清理缓存以防止错误状态持续
+    cachedClient = null;
+    cachedConversations.clear();
+    throw error;
+  }
+};
+
+// 清理缓存的函数，可在用户登出时调用
+export const clearRealtimeCache = () => {
+  cachedClient = null;
+  cachedConversations.clear();
+  console.log('已清理实时通信缓存');
 };
 
 export default {

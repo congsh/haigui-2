@@ -7,7 +7,8 @@ import {
   sendMessage, 
   getRoomMessages, 
   updateRoomStatus, 
-  endRoom 
+  endRoom,
+  removeParticipant 
 } from '@/utils/leancloud';
 import { useAuth } from './AuthContext';
 import { generateRoomId, saveToLocalStorage, getFromLocalStorage, removeFromLocalStorage } from '@/utils/helpers';
@@ -63,6 +64,13 @@ export const RoomProvider = ({ children }) => {
             }
             return [...prev, newParticipant];
           });
+          break;
+        case 'participant_leave':
+          // 移除参与者
+          const leftParticipant = messageData.participant;
+          setParticipants(prev => 
+            prev.filter(p => p.userId !== leftParticipant.userId)
+          );
           break;
         case 'room_update':
           // 重新加载房间数据
@@ -339,8 +347,25 @@ export const RoomProvider = ({ children }) => {
   };
   
   // 离开房间
-  const leaveRoom = () => {
-    // 清除房间数据
+  const leaveRoom = async () => {
+    if (!user || !currentRoom) {
+      // 如果没有用户或房间信息，只清除本地数据
+      setCurrentRoom(null);
+      setParticipants([]);
+      setMessages([]);
+      removeFromLocalStorage('currentRoom');
+      return;
+    }
+    
+    try {
+      // 从数据库中删除参与者记录
+      await removeParticipant(currentRoom.roomId, user.id);
+    } catch (error) {
+      console.error('删除参与者记录失败:', error);
+      // 即使删除失败，也继续清除本地数据
+    }
+    
+    // 清除本地房间数据
     setCurrentRoom(null);
     setParticipants([]);
     setMessages([]);
@@ -393,4 +418,4 @@ export const useRoom = () => {
   return context;
 };
 
-export default RoomContext; 
+export default RoomContext;

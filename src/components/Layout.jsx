@@ -15,7 +15,7 @@ const Layout = ({ children, showHeader = true, showFooter = true }) => {
     try {
       // 如果在房间中，先离开房间
       if (currentRoom) {
-        leaveRoom();
+        await leaveRoom();
       }
       await logout();
       navigate('/');
@@ -25,12 +25,18 @@ const Layout = ({ children, showHeader = true, showFooter = true }) => {
   };
 
   // 处理返回主页
-  const handleBackToHome = () => {
-    // 如果在房间中，先离开房间
-    if (currentRoom) {
-      leaveRoom();
+  const handleBackToHome = async () => {
+    try {
+      // 如果在房间中，先离开房间
+      if (currentRoom) {
+        await leaveRoom();
+      }
+      navigate('/');
+    } catch (error) {
+      console.error('离开房间失败:', error);
+      // 即使离开房间失败，也继续导航到主页
+      navigate('/');
     }
-    navigate('/');
   };
 
   return (
@@ -108,4 +114,4 @@ const Layout = ({ children, showHeader = true, showFooter = true }) => {
   );
 };
 
-export default Layout; 
+export default Layout;

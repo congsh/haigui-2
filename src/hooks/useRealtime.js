@@ -85,12 +85,15 @@ const useRealtime = () => {
           }
           
           // 通知所有监听器
-          messageListeners.forEach(listener => {
-            try {
-              listener(messageData);
-            } catch (err) {
-              console.error('处理消息时发生错误:', err);
-            }
+          setMessageListeners(currentListeners => {
+            currentListeners.forEach(listener => {
+              try {
+                listener(messageData);
+              } catch (err) {
+                console.error('处理消息时发生错误:', err);
+              }
+            });
+            return currentListeners;
           });
         } catch (err) {
           console.error('解析消息时发生错误:', err);
@@ -104,7 +107,7 @@ const useRealtime = () => {
       setConnected(false);
       return null;
     }
-  }, [user, currentRoom, participants, messageListeners]);
+  }, [user, currentRoom, participants]);
   
   // 当用户或房间变化时，初始化实时连接
   useEffect(() => {

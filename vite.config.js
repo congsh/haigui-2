@@ -12,6 +12,8 @@ export default defineConfig({
   server: {
     port: 3000,
     open: true,
+    // 配置 historyApiFallback 以支持 SPA 路由
+    historyApiFallback: true,
     proxy: {
       '/leancloud/1.1': {
         target: 'https://5zutwsdr.lc-cn-n1-shared.com',
@@ -42,4 +44,4 @@ export default defineConfig({
     minify: true,
     sourcemap: false,
   }
-}); 
+});
