@@ -63,7 +63,8 @@ export const AuthProvider = ({ children }) => {
       setLoading(true);
       await logout();
       setUser(null);
-      // 保留昵称，但清除其他可能的会话数据
+      // 清除昵称和其他会话数据
+      removeFromLocalStorage('userNickname');
       removeFromLocalStorage('currentRoom');
     } catch (err) {
       console.error('登出失败:', err);

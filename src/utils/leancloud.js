@@ -14,11 +14,19 @@ AV.init({
   serverURL: SERVER_URL,
 });
 
+// 配置请求超时和错误重试
+AV._config.requestTimeout = 30000; // 30秒超时
+AV._config.disableCurrentUser = false;
+
 // 初始化 LeanCloud 实时通信 SDK
 const realtime = new Realtime({
   appId: APP_ID,
   appKey: APP_KEY,
   server: SERVER_URL,
+  retryPolicy: {
+    maxRetryTimes: 3, // 最多重试3次
+    retryDelay: 1000, // 初始延迟1秒
+  }
 });
 
 // 匿名登录
@@ -95,16 +103,41 @@ export const createRoom = async (roomData) => {
 
 // 根据房间ID查找房间
 export const findRoomById = async (roomId) => {
-  try {
-    const query = new AV.Query('Room');
-    query.equalTo('roomId', roomId);
-    query.equalTo('active', true);
-    const room = await query.first();
-    return room ? room.toJSON() : null;
-  } catch (error) {
-    console.error('查找房间失败:', error);
-    throw error;
-  }
+  let retries = 0;
+  const maxRetries = 3;
+  
+  const tryFind = async () => {
+    try {
+      const query = new AV.Query('Room');
+      query.equalTo('roomId', roomId);
+      query.equalTo('active', true);
+      
+      const room = await query.first();
+      return room ? room.toJSON() : null;
+    } catch (error) {
+      console.error('查找房间失败:', error);
+      
+      // 如果是网络错误或超时，尝试重试
+      if ((error.message.includes('network') || 
+           error.message.includes('terminated') || 
+           error.message.includes('timeout') || 
+           error.code === 31) && retries < maxRetries) {
+        retries++;
+        console.log(`尝试重新查找房间 (${retries}/${maxRetries})...`);
+        // 延迟1秒后重试
+        return new Promise(resolve => {
+          setTimeout(async () => {
+            const result = await tryFind();
+            resolve(result);
+          }, 1000 * retries); // 递增延迟
+        });
+      }
+      
+      throw error;
+    }
+  };
+  
+  return tryFind();
 };
 
 // 加入房间
@@ -231,37 +264,81 @@ export const endRoom = async (roomId) => {
 
 // 上传图片
 export const uploadImage = async (file, fileName) => {
-  try {
-    const avFile = new AV.File(fileName, file);
-    await avFile.save();
-    return avFile.url();
-  } catch (error) {
-    console.error('上传图片失败:', error);
-    throw error;
-  }
+  let retries = 0;
+  const maxRetries = 3;
+  
+  const tryUpload = async () => {
+    try {
+      const avFile = new AV.File(fileName, file);
+      await avFile.save({
+        timeout: 30000, // 30秒超时
+      });
+      return avFile.url();
+    } catch (error) {
+      console.error('上传图片失败:', error);
+      
+      // 如果是网络错误或超时，尝试重试
+      if ((error.message.includes('network') || error.message.includes('timeout') || error.code === 31) && retries < maxRetries) {
+        retries++;
+        console.log(`尝试重新上传 (${retries}/${maxRetries})...`);
+        // 延迟1秒后重试
+        return new Promise(resolve => {
+          setTimeout(async () => {
+            const result = await tryUpload();
+            resolve(result);
+          }, 1000);
+        });
+      }
+      
+      throw error;
+    }
+  };
+  
+  return tryUpload();
 };
 
 // 删除图片
 export const deleteImage = async (url) => {
-  try {
-    // 从URL提取文件名
-    const fileName = url.substring(url.lastIndexOf('/') + 1);
-    
-    // 查询文件
-    const query = new AV.Query('_File');
-    query.equalTo('name', fileName);
-    const file = await query.first();
-    
-    if (file) {
-      await file.destroy();
-      return true;
+  let retries = 0;
+  const maxRetries = 3;
+  
+  const tryDelete = async () => {
+    try {
+      // 从URL提取文件名
+      const fileName = url.substring(url.lastIndexOf('/') + 1);
+      
+      // 查询文件
+      const query = new AV.Query('_File');
+      query.equalTo('name', fileName);
+      const file = await query.first();
+      
+      if (file) {
+        await file.destroy();
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('删除图片失败:', error);
+      
+      // 如果是网络错误或超时，尝试重试
+      if ((error.message.includes('network') || error.message.includes('timeout') || error.code === 31) && retries < maxRetries) {
+        retries++;
+        console.log(`尝试重新删除 (${retries}/${maxRetries})...`);
+        // 延迟1秒后重试
+        return new Promise(resolve => {
+          setTimeout(async () => {
+            const result = await tryDelete();
+            resolve(result);
+          }, 1000);
+        });
+      }
+      
+      throw error;
     }
-    
-    return false;
-  } catch (error) {
-    console.error('删除图片失败:', error);
-    throw error;
-  }
+  };
+  
+  return tryDelete();
 };
 
 // 创建实时连接
@@ -294,6 +371,11 @@ export const joinRealtimeConversation = async (client, roomId, participants) => 
 // 发送实时消息
 export const sendRealtimeMessage = async (conversation, message) => {
   try {
+    if (!message.hasOwnProperty('text')) {
+      // 如果没有text属性，则将整个消息作为text发送
+      message = { text: JSON.stringify(message) };
+    }
+    
     await conversation.send(message);
     return true;
   } catch (error) {

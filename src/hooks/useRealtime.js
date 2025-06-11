@@ -1,23 +1,32 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createRealtimeConnection, joinRealtimeConversation } from '@/utils/leancloud';
 import { useAuth } from '@/contexts/AuthContext';
-import { useRoom } from '@/contexts/RoomContext';
 
 // 自定义Hook，用于管理实时连接
 const useRealtime = () => {
   const { user } = useAuth();
-  const { 
-    currentRoom, 
-    participants, 
-    addMessage, 
-    updateParticipant, 
-    loadRoomData 
-  } = useRoom();
+  const [currentRoom, setCurrentRoom] = useState(null);
+  const [participants, setParticipants] = useState([]);
+  const [messageListeners, setMessageListeners] = useState([]);
   
   const [realtimeClient, setRealtimeClient] = useState(null);
   const [conversation, setConversation] = useState(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState(null);
+  
+  // 添加消息监听器
+  const addMessageListener = useCallback((listener) => {
+    setMessageListeners(prev => [...prev, listener]);
+    return () => {
+      setMessageListeners(prev => prev.filter(l => l !== listener));
+    };
+  }, []);
+  
+  // 设置当前房间和参与者
+  const setRoom = useCallback((room, roomParticipants) => {
+    setCurrentRoom(room);
+    setParticipants(roomParticipants);
+  }, []);
   
   // 初始化实时连接
   const initializeRealtime = useCallback(async () => {
@@ -53,23 +62,14 @@ const useRealtime = () => {
       conv.on('message', (message) => {
         const messageData = JSON.parse(message.text);
         
-        // 根据消息类型处理
-        switch (messageData.type) {
-          case 'question':
-          case 'answer':
-          case 'clue':
-          case 'interaction':
-            addMessage(messageData);
-            break;
-          case 'participant_join':
-            updateParticipant(messageData.participant);
-            break;
-          case 'room_update':
-            loadRoomData(currentRoom.roomId);
-            break;
-          default:
-            console.log('收到未知类型消息:', messageData);
-        }
+        // 通知所有监听器
+        messageListeners.forEach(listener => {
+          try {
+            listener(messageData);
+          } catch (err) {
+            console.error('处理消息时发生错误:', err);
+          }
+        });
       });
       
       return client;
@@ -79,7 +79,7 @@ const useRealtime = () => {
       setConnected(false);
       return null;
     }
-  }, [user, currentRoom, participants, addMessage, updateParticipant, loadRoomData]);
+  }, [user, currentRoom, participants, messageListeners]);
   
   // 当用户或房间变化时，初始化实时连接
   useEffect(() => {
@@ -109,9 +109,13 @@ const useRealtime = () => {
     }
     
     try {
-      await conversation.send({
+      // 使用正确的消息格式，创建一个消息对象
+      const message = {
         text: JSON.stringify(messageData),
-      });
+      };
+      
+      // 发送消息对象
+      await conversation.send(message);
       return true;
     } catch (err) {
       console.error('发送实时消息失败:', err);
@@ -126,6 +130,8 @@ const useRealtime = () => {
     connected,
     error,
     sendRealtimeMessage,
+    setRoom,
+    addMessageListener,
   };
 };
 

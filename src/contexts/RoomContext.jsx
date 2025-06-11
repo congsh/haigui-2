@@ -11,6 +11,7 @@ import {
 } from '@/utils/leancloud';
 import { useAuth } from './AuthContext';
 import { generateRoomId, saveToLocalStorage, getFromLocalStorage, removeFromLocalStorage } from '@/utils/helpers';
+import useRealtime from '@/hooks/useRealtime';
 
 const RoomContext = createContext();
 
@@ -21,6 +22,71 @@ export const RoomProvider = ({ children }) => {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  
+  // 使用实时通信功能
+  const { sendRealtimeMessage, connected, setRoom, addMessageListener } = useRealtime();
+  
+  // 处理收到的实时消息
+  useEffect(() => {
+    if (!user) return;
+    
+    // 添加消息监听器
+    const removeListener = addMessageListener((messageData) => {
+      // 根据消息类型处理
+      switch (messageData.type) {
+        case 'question':
+        case 'answer':
+        case 'clue':
+        case 'system':
+        case 'interaction':
+          // 避免重复添加消息
+          setMessages(prev => {
+            // 检查是否已存在此消息 (通过objectId或内容+时间+发送者组合)
+            const messageExists = prev.some(m => 
+              (m.objectId && m.objectId === messageData.objectId) || 
+              (m.from === messageData.from && 
+               m.content === messageData.content && 
+               m.timestamp && messageData.timestamp && 
+               new Date(m.timestamp).getTime() === new Date(messageData.timestamp).getTime())
+            );
+            if (messageExists) return prev;
+            return [...prev, messageData];
+          });
+          break;
+        case 'participant_join':
+          // 更新参与者
+          const newParticipant = messageData.participant;
+          setParticipants(prev => {
+            const exists = prev.some(p => p.userId === newParticipant.userId);
+            if (exists) {
+              return prev.map(p => p.userId === newParticipant.userId ? newParticipant : p);
+            }
+            return [...prev, newParticipant];
+          });
+          break;
+        case 'room_update':
+          // 重新加载房间数据
+          if (currentRoom && currentRoom.roomId === messageData.roomId) {
+            loadRoomData(currentRoom.roomId);
+          }
+          break;
+        default:
+          console.log('收到未知类型消息:', messageData);
+      }
+    });
+    
+    // 清理函数
+    return () => {
+      removeListener();
+    };
+  }, [user, currentRoom, addMessageListener]);
+  
+  // 当房间或参与者变化时，更新实时通信
+  useEffect(() => {
+    if (currentRoom && participants.length > 0) {
+      setRoom(currentRoom, participants);
+    }
+  }, [currentRoom, participants, setRoom]);
   
   // 初始化时检查是否有保存的房间
   useEffect(() => {
@@ -39,28 +105,61 @@ export const RoomProvider = ({ children }) => {
   const loadRoomData = async (roomId) => {
     if (!roomId || !user) return;
     
-    try {
-      setLoading(true);
-      
-      // 获取房间信息
-      const roomData = await findRoomById(roomId);
-      if (roomData) {
-        setCurrentRoom(roomData);
+    let retries = 0;
+    const maxRetries = 3;
+    
+    const loadData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // 获取房间信息
+        const roomData = await findRoomById(roomId);
+        if (roomData) {
+          setCurrentRoom(roomData);
+          
+          // 如果房间有封面图片，发送一条包含图片的系统消息
+          if (roomData.imageUrl && roomData.status === 'active') {
+            // 检查是否已经发送过图片消息
+            const hasImageMessage = messages.some(m => 
+              m.type === 'system' && 
+              m.content === '谜题图片' && 
+              m.imageUrl === roomData.imageUrl
+            );
+            
+            if (!hasImageMessage) {
+              sendMessage('谜题图片', 'system', roomData.imageUrl);
+            }
+          }
+        }
+        
+        // 获取参与者列表
+        const participantsList = await getRoomParticipants(roomId);
+        setParticipants(participantsList);
+        
+        // 获取消息历史
+        const messageHistory = await getRoomMessages(roomId);
+        setMessages(messageHistory);
+      } catch (err) {
+        console.error('加载房间数据失败:', err);
+        
+        // 添加重试逻辑
+        if (retries < maxRetries) {
+          retries++;
+          console.log(`尝试重新加载 (${retries}/${maxRetries})...`);
+          // 延迟1秒后重试
+          setTimeout(() => loadData(), 1000);
+          return;
+        }
+        
+        setError(err.message);
+      } finally {
+        setLoading(false);
       }
-      
-      // 获取参与者列表
-      const participantsList = await getRoomParticipants(roomId);
-      setParticipants(participantsList);
-      
-      // 获取消息历史
-      const messageHistory = await getRoomMessages(roomId);
-      setMessages(messageHistory);
-    } catch (err) {
-      console.error('加载房间数据失败:', err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+    };
+    
+    // 开始加载
+    loadData();
   };
   
   // 创建新房间
@@ -139,7 +238,7 @@ export const RoomProvider = ({ children }) => {
   };
   
   // 发送消息
-  const sendRoomMessage = async (content, type = 'question') => {
+  const sendRoomMessage = async (content, type = 'question', imageUrl = null) => {
     if (!user || !currentRoom) throw new Error('用户未登录或房间不存在');
     
     try {
@@ -151,13 +250,30 @@ export const RoomProvider = ({ children }) => {
         from: user.id,
         fromName: user.get('nickname') || '匿名用户',
         content,
+        imageUrl,
         timestamp: new Date(),
       };
       
+      // 存储消息到数据库
       const newMessage = await sendMessage(messageData);
       
-      // 更新消息列表
+      // 更新本地消息列表
       setMessages(prev => [...prev, newMessage]);
+      
+      // 通过实时通信推送消息给所有用户
+      if (connected) {
+        try {
+          // 发送一个简化版的消息以避免可能的序列化问题
+          const rtMessage = {
+            ...newMessage,
+            timestamp: newMessage.timestamp || new Date(),
+          };
+          await sendRealtimeMessage(rtMessage);
+        } catch (rtError) {
+          console.error('实时消息推送失败:', rtError);
+          // 即使实时推送失败，也继续返回成功，因为消息已经保存到数据库
+        }
+      }
       
       return newMessage;
     } catch (err) {
