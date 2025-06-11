@@ -346,10 +346,13 @@ export const RoomProvider = ({ children }) => {
     }
   };
   
-  // 离开房间
+  // 离开房间 - 清除所有房间相关数据
   const leaveRoom = async () => {
+    console.log('开始离开房间...');
+    
     if (!user || !currentRoom) {
       // 如果没有用户或房间信息，只清除本地数据
+      console.log('无用户或房间信息，仅清除本地数据');
       setCurrentRoom(null);
       setParticipants([]);
       setMessages([]);
@@ -360,6 +363,7 @@ export const RoomProvider = ({ children }) => {
     try {
       // 从数据库中删除参与者记录
       await removeParticipant(currentRoom.roomId, user.id);
+      console.log('已从数据库删除参与者记录');
     } catch (error) {
       console.error('删除参与者记录失败:', error);
       // 即使删除失败，也继续清除本地数据
@@ -370,6 +374,8 @@ export const RoomProvider = ({ children }) => {
     setParticipants([]);
     setMessages([]);
     removeFromLocalStorage('currentRoom');
+    
+    console.log('房间数据清理完成');
   };
   
   // 添加新消息（用于实时接收）

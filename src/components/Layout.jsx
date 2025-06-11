@@ -63,6 +63,25 @@ const Layout = ({ children, showHeader = true, showFooter = true }) => {
                     <span className="text-sm text-gray-600">
                       {user.get('nickname') || '匿名用户'}
                     </span>
+                    
+                    {/* 管理员链接 */}
+                    {(user.get('nickname') === 'admin' || user.get('email')?.includes('admin')) && (
+                      <Link to="/admin">
+                        <Button variant="ghost" size="sm">
+                          🛠️ 管理
+                        </Button>
+                      </Link>
+                    )}
+                    
+                    {/* 创建房间链接 */}
+                    {!currentRoom && (
+                      <Link to="/create">
+                        <Button variant="ghost" size="sm">
+                          ➕ 创建房间
+                        </Button>
+                      </Link>
+                    )}
+                    
                     {currentRoom ? (
                       <Button
                         onClick={handleBackToHome}

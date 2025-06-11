@@ -57,15 +57,22 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // 登出函数
+  // 登出函数 - 清除所有用户数据
   const logoutUser = async () => {
     try {
       setLoading(true);
+      
+      // 调用LeanCloud的登出函数（已包含缓存清理）
       await logout();
+      
+      // 清除用户状态
       setUser(null);
-      // 清除昵称和其他会话数据
+      
+      // 清除所有本地存储数据
       removeFromLocalStorage('userNickname');
       removeFromLocalStorage('currentRoom');
+      
+      console.log('用户登出完成，所有数据已清理');
     } catch (err) {
       console.error('登出失败:', err);
       setError(err.message);
@@ -94,4 +101,4 @@ export const useAuth = () => {
   return context;
 };
 
-export default AuthContext; 
+export default AuthContext;

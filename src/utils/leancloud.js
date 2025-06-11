@@ -29,25 +29,32 @@ const realtime = new Realtime({
   }
 });
 
-// 匿名登录
+/**
+ * 匿名登录 - 允许昵称重复
+ * @param {string} nickname - 用户昵称
+ * @returns {Promise<Object>} 用户对象
+ */
 export const loginAnonymously = async (nickname) => {
   try {
-    // 创建随机邮箱和密码
+    // 创建随机邮箱和密码，确保用户名唯一性
     const randomId = Math.random().toString(36).substring(2, 10);
-    const email = `anonymous_${randomId}@haigui.com`;
+    const timestamp = Date.now();
+    const email = `anonymous_${randomId}_${timestamp}@haigui.com`;
     const password = Math.random().toString(36).substring(2, 15);
     
-    // 创建新用户
+    // 创建新用户，用户名使用随机ID确保唯一性，但昵称可以重复
     const user = new AV.User();
-    user.setUsername(nickname || `游客${randomId.substring(0, 4)}`);
+    user.setUsername(`user_${randomId}_${timestamp}`); // 用户名唯一
     user.setPassword(password);
     user.setEmail(email);
     
-    // 设置昵称
-    user.set('nickname', nickname || `游客${randomId.substring(0, 4)}`);
+    // 设置昵称（允许重复）
+    const finalNickname = nickname || `游客${randomId.substring(0, 4)}`;
+    user.set('nickname', finalNickname);
     
     // 注册用户
     const newUser = await user.signUp();
+    console.log('用户注册成功，昵称:', finalNickname);
     return newUser;
   } catch (error) {
     console.error('匿名登录失败:', error);
@@ -60,10 +67,19 @@ export const getCurrentUser = () => {
   return AV.User.current();
 };
 
-// 退出登录
+/**
+ * 退出登录 - 清除所有缓存数据
+ * @returns {Promise<boolean>} 是否成功退出
+ */
 export const logout = async () => {
   try {
+    // 清理实时通信缓存
+    clearRealtimeCache();
+    
+    // 退出登录
     await AV.User.logOut();
+    
+    console.log('用户已退出登录，缓存已清理');
     return true;
   } catch (error) {
     console.error('退出登录失败:', error);
@@ -313,21 +329,88 @@ export const updateRoomStatus = async (roomId, status) => {
   }
 };
 
-// 结束房间
+/**
+ * 结束房间 - 删除房间及所有相关数据
+ * @param {string} roomId - 房间ID
+ * @returns {Promise<Object>} 房间对象
+ */
 export const endRoom = async (roomId) => {
   try {
-    const query = new AV.Query('Room');
-    query.equalTo('roomId', roomId);
-    const room = await query.first();
+    console.log('开始清理房间数据:', roomId);
+    
+    // 1. 获取房间信息
+    const roomQuery = new AV.Query('Room');
+    roomQuery.equalTo('roomId', roomId);
+    const room = await roomQuery.first();
     
     if (!room) {
       throw new Error('房间不存在');
     }
     
-    room.set('status', 'ended');
-    room.set('active', false);
-    await room.save();
-    return room.toJSON();
+    // 2. 删除所有参与者记录
+    try {
+      const participantQuery = new AV.Query('Participant');
+      participantQuery.equalTo('roomId', roomId);
+      const participants = await participantQuery.find();
+      
+      if (participants.length > 0) {
+        await AV.Object.destroyAll(participants);
+        console.log(`已删除 ${participants.length} 个参与者记录`);
+      }
+    } catch (error) {
+      console.warn('删除参与者记录失败:', error);
+    }
+    
+    // 3. 删除所有聊天消息
+    try {
+      const messageQuery = new AV.Query('Message');
+      messageQuery.equalTo('roomId', roomId);
+      const messages = await messageQuery.find();
+      
+      if (messages.length > 0) {
+        // 删除消息中的图片文件
+        for (const message of messages) {
+          const imageUrl = message.get('imageUrl');
+          if (imageUrl) {
+            try {
+              await deleteImage(imageUrl);
+            } catch (imgError) {
+              console.warn('删除消息图片失败:', imgError);
+            }
+          }
+        }
+        
+        await AV.Object.destroyAll(messages);
+        console.log(`已删除 ${messages.length} 条聊天记录`);
+      }
+    } catch (error) {
+      console.warn('删除聊天记录失败:', error);
+    }
+    
+    // 4. 删除房间封面图片
+    try {
+      const imageUrl = room.get('imageUrl');
+      if (imageUrl) {
+        await deleteImage(imageUrl);
+        console.log('已删除房间封面图片');
+      }
+    } catch (error) {
+      console.warn('删除房间图片失败:', error);
+    }
+    
+    // 5. 删除房间记录
+    const roomData = room.toJSON();
+    await room.destroy();
+    console.log('房间数据清理完成:', roomId);
+    
+    // 6. 清理实时通信缓存中的相关对话
+    const conversationKey = `Room-${roomId}`;
+    if (cachedConversations.has(conversationKey)) {
+      cachedConversations.delete(conversationKey);
+      console.log('已清理实时对话缓存');
+    }
+    
+    return roomData;
   } catch (error) {
     console.error('结束房间失败:', error);
     throw error;
@@ -609,11 +692,361 @@ export const sendRealtimeNotification = async (roomId, notificationData) => {
   }
 };
 
-// 清理缓存的函数，可在用户登出时调用
+/**
+ * 清理实时通信缓存
+ * 在用户登出或需要重置连接时调用
+ */
 export const clearRealtimeCache = () => {
+  try {
+    // 关闭现有客户端连接
+    if (cachedClient && typeof cachedClient.close === 'function') {
+      cachedClient.close();
+    }
+  } catch (error) {
+    console.warn('关闭实时客户端失败:', error);
+  }
+  
   cachedClient = null;
   cachedConversations.clear();
   console.log('已清理实时通信缓存');
+};
+
+// ==================== 定时清理功能 ====================
+
+/**
+ * 查找过期房间（48小时未更新）
+ * @returns {Promise<Array>} 过期房间列表
+ */
+export const findExpiredRooms = async () => {
+  try {
+    const expireTime = new Date(Date.now() - 48 * 60 * 60 * 1000); // 48小时前
+    
+    const query = new AV.Query('Room');
+    query.lessThan('updatedAt', expireTime);
+    query.limit(100); // 每次最多处理100个房间
+    
+    const expiredRooms = await query.find();
+    console.log(`找到 ${expiredRooms.length} 个过期房间`);
+    
+    return expiredRooms.map(room => room.toJSON());
+  } catch (error) {
+    console.error('查找过期房间失败:', error);
+    throw error;
+  }
+};
+
+/**
+ * 查找过期用户（48小时未登录）
+ * @returns {Promise<Array>} 过期用户列表
+ */
+export const findExpiredUsers = async () => {
+  try {
+    const expireTime = new Date(Date.now() - 48 * 60 * 60 * 1000); // 48小时前
+    
+    const query = new AV.Query('_User');
+    query.lessThan('updatedAt', expireTime);
+    query.startsWith('username', 'user_'); // 只查找匿名用户
+    query.limit(100); // 每次最多处理100个用户
+    
+    const expiredUsers = await query.find();
+    console.log(`找到 ${expiredUsers.length} 个过期用户`);
+    
+    return expiredUsers.map(user => user.toJSON());
+  } catch (error) {
+    console.error('查找过期用户失败:', error);
+    throw error;
+  }
+};
+
+/**
+ * 清理单个过期房间的所有数据
+ * @param {string} roomId - 房间ID
+ * @returns {Promise<boolean>} 是否清理成功
+ */
+export const cleanupExpiredRoom = async (roomId) => {
+  try {
+    console.log('开始清理过期房间:', roomId);
+    
+    // 复用现有的endRoom函数，它已经包含了完整的清理逻辑
+    await endRoom(roomId);
+    
+    console.log('过期房间清理完成:', roomId);
+    return true;
+  } catch (error) {
+    console.error('清理过期房间失败:', roomId, error);
+    return false;
+  }
+};
+
+/**
+ * 清理单个过期用户的所有数据
+ * @param {string} userId - 用户ID
+ * @returns {Promise<boolean>} 是否清理成功
+ */
+export const cleanupExpiredUser = async (userId) => {
+  try {
+    console.log('开始清理过期用户:', userId);
+    
+    // 1. 删除用户的参与者记录
+    try {
+      const participantQuery = new AV.Query('Participant');
+      participantQuery.equalTo('userId', userId);
+      const participants = await participantQuery.find();
+      
+      if (participants.length > 0) {
+        await AV.Object.destroyAll(participants);
+        console.log(`已删除用户 ${userId} 的 ${participants.length} 个参与者记录`);
+      }
+    } catch (error) {
+      console.warn('删除用户参与者记录失败:', error);
+    }
+    
+    // 2. 删除用户发送的消息
+    try {
+      const messageQuery = new AV.Query('Message');
+      messageQuery.equalTo('from', userId);
+      const messages = await messageQuery.find();
+      
+      if (messages.length > 0) {
+        // 删除消息中的图片文件
+        for (const message of messages) {
+          const imageUrl = message.get('imageUrl');
+          if (imageUrl) {
+            try {
+              await deleteImage(imageUrl);
+            } catch (imgError) {
+              console.warn('删除用户消息图片失败:', imgError);
+            }
+          }
+        }
+        
+        await AV.Object.destroyAll(messages);
+        console.log(`已删除用户 ${userId} 的 ${messages.length} 条消息`);
+      }
+    } catch (error) {
+      console.warn('删除用户消息失败:', error);
+    }
+    
+    // 3. 删除用户创建的房间
+    try {
+      const roomQuery = new AV.Query('Room');
+      roomQuery.equalTo('hostId', userId);
+      const rooms = await roomQuery.find();
+      
+      for (const room of rooms) {
+        try {
+          await cleanupExpiredRoom(room.get('roomId'));
+        } catch (roomError) {
+          console.warn('删除用户房间失败:', roomError);
+        }
+      }
+      
+      if (rooms.length > 0) {
+        console.log(`已删除用户 ${userId} 创建的 ${rooms.length} 个房间`);
+      }
+    } catch (error) {
+      console.warn('删除用户房间失败:', error);
+    }
+    
+    // 4. 删除用户记录
+    try {
+      const userQuery = new AV.Query('_User');
+      const user = await userQuery.get(userId);
+      if (user) {
+        await user.destroy();
+        console.log('已删除用户记录:', userId);
+      }
+    } catch (error) {
+      console.warn('删除用户记录失败:', error);
+    }
+    
+    console.log('过期用户清理完成:', userId);
+    return true;
+  } catch (error) {
+    console.error('清理过期用户失败:', userId, error);
+    return false;
+  }
+};
+
+/**
+ * 批量清理过期房间
+ * @returns {Promise<Object>} 清理结果统计
+ */
+export const cleanupExpiredRooms = async () => {
+  try {
+    console.log('开始批量清理过期房间...');
+    
+    const expiredRooms = await findExpiredRooms();
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (const room of expiredRooms) {
+      const success = await cleanupExpiredRoom(room.roomId);
+      if (success) {
+        successCount++;
+      } else {
+        failCount++;
+      }
+      
+      // 添加延迟避免请求过于频繁
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    const result = {
+      total: expiredRooms.length,
+      success: successCount,
+      failed: failCount,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('过期房间清理完成:', result);
+    return result;
+  } catch (error) {
+    console.error('批量清理过期房间失败:', error);
+    throw error;
+  }
+};
+
+/**
+ * 批量清理过期用户
+ * @returns {Promise<Object>} 清理结果统计
+ */
+export const cleanupExpiredUsers = async () => {
+  try {
+    console.log('开始批量清理过期用户...');
+    
+    const expiredUsers = await findExpiredUsers();
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (const user of expiredUsers) {
+      const success = await cleanupExpiredUser(user.objectId);
+      if (success) {
+        successCount++;
+      } else {
+        failCount++;
+      }
+      
+      // 添加延迟避免请求过于频繁
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    const result = {
+      total: expiredUsers.length,
+      success: successCount,
+      failed: failCount,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('过期用户清理完成:', result);
+    return result;
+  } catch (error) {
+    console.error('批量清理过期用户失败:', error);
+    throw error;
+  }
+};
+
+/**
+ * 执行完整的清理任务
+ * @returns {Promise<Object>} 清理结果统计
+ */
+export const runCleanupTask = async () => {
+  try {
+    console.log('开始执行定时清理任务...');
+    
+    const startTime = Date.now();
+    
+    // 并行执行房间和用户清理
+    const [roomResult, userResult] = await Promise.allSettled([
+      cleanupExpiredRooms(),
+      cleanupExpiredUsers()
+    ]);
+    
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+    
+    const result = {
+      duration: `${duration}ms`,
+      rooms: roomResult.status === 'fulfilled' ? roomResult.value : { error: roomResult.reason?.message },
+      users: userResult.status === 'fulfilled' ? userResult.value : { error: userResult.reason?.message },
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('定时清理任务完成:', result);
+    return result;
+  } catch (error) {
+    console.error('执行清理任务失败:', error);
+    throw error;
+  }
+};
+
+// 定时任务管理
+let cleanupInterval = null;
+
+/**
+ * 启动定时清理任务
+ * @param {number} intervalHours - 清理间隔（小时），默认24小时
+ * @returns {boolean} 是否启动成功
+ */
+export const startCleanupSchedule = (intervalHours = 24) => {
+  try {
+    // 如果已有定时任务，先停止
+    if (cleanupInterval) {
+      clearInterval(cleanupInterval);
+    }
+    
+    const intervalMs = intervalHours * 60 * 60 * 1000;
+    
+    // 立即执行一次清理
+    runCleanupTask().catch(error => {
+      console.error('初始清理任务失败:', error);
+    });
+    
+    // 设置定时任务
+    cleanupInterval = setInterval(() => {
+      runCleanupTask().catch(error => {
+        console.error('定时清理任务失败:', error);
+      });
+    }, intervalMs);
+    
+    console.log(`定时清理任务已启动，间隔: ${intervalHours} 小时`);
+    return true;
+  } catch (error) {
+    console.error('启动定时清理任务失败:', error);
+    return false;
+  }
+};
+
+/**
+ * 停止定时清理任务
+ * @returns {boolean} 是否停止成功
+ */
+export const stopCleanupSchedule = () => {
+  try {
+    if (cleanupInterval) {
+      clearInterval(cleanupInterval);
+      cleanupInterval = null;
+      console.log('定时清理任务已停止');
+      return true;
+    }
+    console.log('没有运行中的定时清理任务');
+    return true;
+  } catch (error) {
+    console.error('停止定时清理任务失败:', error);
+    return false;
+  }
+};
+
+/**
+ * 获取定时清理任务状态
+ * @returns {Object} 任务状态信息
+ */
+export const getCleanupScheduleStatus = () => {
+  return {
+    isRunning: cleanupInterval !== null,
+    intervalId: cleanupInterval,
+    timestamp: new Date().toISOString()
+  };
 };
 
 export default {
