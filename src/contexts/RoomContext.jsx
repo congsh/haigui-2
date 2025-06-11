@@ -265,8 +265,13 @@ export const RoomProvider = ({ children }) => {
         try {
           // 发送一个简化版的消息以避免可能的序列化问题
           const rtMessage = {
-            ...newMessage,
-            timestamp: newMessage.timestamp || new Date(),
+            type: newMessage.type,
+            content: newMessage.content,
+            from: newMessage.from,
+            fromName: newMessage.fromName,
+            timestamp: newMessage.timestamp || new Date().toISOString(),
+            imageUrl: newMessage.imageUrl,
+            roomId: newMessage.roomId
           };
           await sendRealtimeMessage(rtMessage);
         } catch (rtError) {

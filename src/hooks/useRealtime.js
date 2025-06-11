@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createRealtimeConnection, joinRealtimeConversation } from '@/utils/leancloud';
 import { useAuth } from '@/contexts/AuthContext';
+import AV from 'leancloud-storage';
+import { TextMessage } from 'leancloud-realtime';
 
 // 自定义Hook，用于管理实时连接
 const useRealtime = () => {
@@ -60,16 +62,39 @@ const useRealtime = () => {
       
       // 设置消息接收器
       conv.on('message', (message) => {
-        const messageData = JSON.parse(message.text);
-        
-        // 通知所有监听器
-        messageListeners.forEach(listener => {
-          try {
-            listener(messageData);
-          } catch (err) {
-            console.error('处理消息时发生错误:', err);
+        try {
+          // 从消息中提取数据
+          let messageData;
+          if (message.text) {
+            try {
+              messageData = JSON.parse(message.text);
+            } catch (e) {
+              // 如果不是有效的 JSON，则直接使用文本
+              messageData = message.text;
+            }
+          } else if (message._lctext) {
+            // 兼容处理不同版本的消息格式
+            try {
+              messageData = JSON.parse(message._lctext);
+            } catch (e) {
+              messageData = message._lctext;
+            }
+          } else {
+            console.warn('收到格式不支持的消息:', message);
+            return;
           }
-        });
+          
+          // 通知所有监听器
+          messageListeners.forEach(listener => {
+            try {
+              listener(messageData);
+            } catch (err) {
+              console.error('处理消息时发生错误:', err);
+            }
+          });
+        } catch (err) {
+          console.error('解析消息时发生错误:', err);
+        }
       });
       
       return client;
@@ -109,12 +134,15 @@ const useRealtime = () => {
     }
     
     try {
-      // 使用正确的消息格式，创建一个消息对象
-      const message = {
-        text: JSON.stringify(messageData),
-      };
+      // 确保消息数据是字符串格式
+      const messageText = typeof messageData === 'string' 
+        ? messageData 
+        : JSON.stringify(messageData);
       
-      // 发送消息对象
+      // 创建文本消息对象
+      const message = new TextMessage(messageText);
+      
+      // 发送消息
       await conversation.send(message);
       return true;
     } catch (err) {
