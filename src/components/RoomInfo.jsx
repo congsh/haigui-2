@@ -106,9 +106,55 @@ const RoomInfo = ({ className = '' }) => {
   return (
     <div className={`bg-white rounded-lg shadow-sm p-4 ${className}`}>
       <div className="flex justify-between items-start mb-3">
-        <h2 className="text-xl font-bold text-gray-800 break-words">{currentRoom.title}</h2>
+        <h2 className="text-xl font-bold text-gray-800 break-words">
+          {currentRoom.titleIsImage ? '图片汤面' : (currentRoom.title || '海龟汤谜题')}
+        </h2>
         <span className={`px-2 py-1 rounded-full text-xs ${statusStyle}`}>{statusText}</span>
       </div>
+      
+      {/* 汤面展示区 */}
+      <div className="mb-4">
+        <h3 className="text-sm font-medium text-gray-700 mb-2">汤面</h3>
+        {currentRoom.titleIsImage && currentRoom.titleImage ? (
+          <div className="mb-3">
+            <img 
+              src={currentRoom.titleImage} 
+              alt="汤面图片" 
+              className="w-full max-w-md rounded-lg border border-gray-200"
+              style={{ maxHeight: '200px', objectFit: 'contain' }}
+            />
+          </div>
+        ) : (
+          <div className="bg-gray-50 p-3 rounded-lg mb-3">
+            <p className="text-gray-800 whitespace-pre-wrap break-words">
+              {currentRoom.title || '暂无汤面内容'}
+            </p>
+          </div>
+        )}
+      </div>
+      
+      {/* 汤底展示区（仅在游戏结束时显示） */}
+      {(currentRoom.status === 'solved' || currentRoom.status === 'ended') && (
+        <div className="mb-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-2">汤底（答案）</h3>
+          {currentRoom.solutionIsImage && currentRoom.solutionImage ? (
+            <div className="mb-3">
+              <img 
+                src={currentRoom.solutionImage} 
+                alt="汤底图片" 
+                className="w-full max-w-md rounded-lg border border-gray-200"
+                style={{ maxHeight: '200px', objectFit: 'contain' }}
+              />
+            </div>
+          ) : (
+            <div className="bg-yellow-50 p-3 rounded-lg mb-3 border border-yellow-200">
+              <p className="text-gray-800 whitespace-pre-wrap break-words">
+                {currentRoom.solution || '暂无汤底内容'}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
       
       <div className="text-gray-600 mb-4">
         <p className="mb-1">房间ID: <span className="font-mono">{currentRoom.roomId}</span></p>
@@ -133,4 +179,4 @@ const RoomInfo = ({ className = '' }) => {
   );
 };
 
-export default RoomInfo; 
+export default RoomInfo;

@@ -344,7 +344,15 @@ export const deleteImage = async (url) => {
 // 创建实时连接
 export const createRealtimeConnection = async (userId) => {
   try {
-    const client = await realtime.createIMClient(userId);
+    // 确保用户已登录
+    const currentUser = AV.User.current();
+    if (!currentUser) {
+      throw new Error('用户未登录，无法建立实时连接');
+    }
+    
+    // 直接使用用户对象创建实时连接
+    const client = await realtime.createIMClient(currentUser);
+    
     return client;
   } catch (error) {
     console.error('创建实时连接失败:', error);
@@ -403,4 +411,4 @@ export default {
   createRealtimeConnection,
   joinRealtimeConversation,
   sendRealtimeMessage,
-}; 
+};
